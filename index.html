@@ -116,6 +116,56 @@
     outline-offset:2px;
   }
 
+  .timer{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:10px 14px;
+    margin-bottom:14px;
+    box-shadow:var(--shadow);
+  }
+  .timer-label{ font-size:11px; color:var(--text-muted); font-weight:600; white-space:nowrap; }
+  .timer .tbtn{ white-space:nowrap; }
+  .timer-time{
+    font-family:'IBM Plex Mono',monospace;
+    font-variant-numeric:tabular-nums;
+    font-size:30px;
+    font-weight:700;
+    flex:1;
+    text-align:center;
+  }
+  .timer.done{ background:var(--warn-soft); border-color:var(--warn); }
+  .timer.done .timer-time{ color:var(--warn); animation:blink .6s steps(2) infinite; }
+  @keyframes blink{ 50%{ opacity:0.35; } }
+
+  #confetti{
+    position:fixed; inset:0; width:100%; height:100%;
+    pointer-events:none; z-index:50;
+  }
+  .mastery{
+    position:fixed; left:50%; top:38%;
+    transform:translate(-50%,-50%) scale(0.6);
+    z-index:51;
+    background:var(--surface);
+    border:2px solid var(--accent);
+    border-radius:16px;
+    padding:22px 28px;
+    font-size:22px;
+    font-weight:700;
+    color:var(--accent-ink);
+    text-align:center;
+    box-shadow:0 8px 30px rgba(0,0,0,0.25);
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .25s ease, transform .35s cubic-bezier(.2,1.4,.4,1);
+    width:min(88vw, 420px);
+  }
+  .mastery.show{ opacity:1; transform:translate(-50%,-50%) scale(1); pointer-events:auto; cursor:pointer; }
+  .mastery small{ display:block; font-size:11px; font-weight:500; color:var(--text-muted); margin-top:6px; }
+
   .list{
     display:flex;
     flex-direction:column;
@@ -219,6 +269,10 @@
     }
     .stepper{ gap:4px; }
     .foot{ margin-top:14px; }
+    .timer{ flex-wrap:wrap; gap:6px 8px; padding:8px 12px; }
+    .timer-label{ flex:0 0 100%; }
+    .timer-time{ font-size:30px; text-align:left; }
+    .timer .tbtn{ padding:11px 12px; }
   }
 
   .foot{
@@ -268,6 +322,13 @@
     </div>
   </header>
 
+  <div class="timer" id="timer">
+    <span class="timer-label">5分タイマー</span>
+    <span class="timer-time" id="timerTime">05:00</span>
+    <button class="tbtn" id="timerStart">スタート</button>
+    <button class="tbtn" id="timerReset">リセット</button>
+  </div>
+
   <div class="toolbar">
     <button class="tbtn" id="undoBtn" disabled>元に戻す</button>
     <button class="tbtn" id="copyBtn">結果をコピー</button>
@@ -282,6 +343,8 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<canvas id="confetti"></canvas>
+<div class="mastery" id="mastery">🎉 マステリーおめでとうございます 🎉<small>5分経過時点で BD・RF・LPが各10以上、QU・CM・NTAの合計3以下</small></div>
 
 <script>
 (function(){
@@ -334,6 +397,7 @@
     });
     undoBtn.disabled = history.length === 0;
     persist();
+    checkMastery();
   }
 
   function apply(code, delta, record){
@@ -417,7 +481,172 @@
     }
   });
 
+  // ---- 5分タイマー ----
+  var DURATION = 5 * 60 * 1000;
+  var timerEl = document.getElementById("timer");
+  var timeEl = document.getElementById("timerTime");
+  var startBtn = document.getElementById("timerStart");
+  var tResetBtn = document.getElementById("timerReset");
+  var endAt = 0, remaining = DURATION, tick = null, running = false;
+  var audioCtx = null, alarmTimer = null;
+  var timerDone = false; // 5分経過済みか（マステリー判定の条件）
+
+  function fmt(ms){
+    var s = Math.ceil(ms / 1000);
+    var m = Math.floor(s / 60);
+    s = s % 60;
+    return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+  }
+  function beep(){
+    if(!audioCtx) return;
+    [0, 0.25, 0.5].forEach(function(d){
+      var o = audioCtx.createOscillator();
+      var g = audioCtx.createGain();
+      o.type = "square";
+      o.frequency.value = 880;
+      g.gain.value = 0.15;
+      o.connect(g); g.connect(audioCtx.destination);
+      var t = audioCtx.currentTime + d;
+      o.start(t); o.stop(t + 0.15);
+    });
+  }
+  function stopAlarm(){
+    clearInterval(alarmTimer); alarmTimer = null;
+    timerEl.classList.remove("done");
+  }
+  function startAlarm(){
+    timerEl.classList.add("done");
+    beep();
+    alarmTimer = setInterval(beep, 1500);
+    if(navigator.vibrate) navigator.vibrate([300,150,300,150,300]);
+  }
+  function update(){
+    var left = endAt - Date.now();
+    if(left <= 0){
+      clearInterval(tick); tick = null;
+      running = false; remaining = 0;
+      timeEl.textContent = "00:00";
+      startBtn.textContent = "停止";
+      timerDone = true;
+      startAlarm();
+      checkMastery();
+      return;
+    }
+    timeEl.textContent = fmt(left);
+  }
+  function timerReset(keepDone){
+    clearInterval(tick); tick = null;
+    stopAlarm();
+    running = false; remaining = DURATION;
+    timeEl.textContent = fmt(DURATION);
+    startBtn.textContent = "スタート";
+    if(!keepDone){ timerDone = false; checkMastery(); }
+  }
+  startBtn.addEventListener("click", function(){
+    if(alarmTimer){ timerReset(true); return; } // アラーム停止（判定結果は残す）
+    if(timerDone){ timerDone = false; checkMastery(); }
+    if(!audioCtx){
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if(AC) audioCtx = new AC();
+    }
+    if(audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+    if(running){
+      remaining = endAt - Date.now();
+      clearInterval(tick); tick = null; running = false;
+      startBtn.textContent = "再開";
+    }else{
+      endAt = Date.now() + remaining;
+      running = true;
+      startBtn.textContent = "一時停止";
+      tick = setInterval(update, 200);
+      update();
+    }
+  });
+  tResetBtn.addEventListener("click", function(){ timerReset(false); });
+
+  // ---- マステリー判定 ----
+  var masteryEl = document.getElementById("mastery");
+  var cv = document.getElementById("confetti");
+  var cx = cv.getContext("2d");
+  var pieces = [], anim = null, masteryHide = null, prevMet = false;
+
+  function isMet(){
+    return counts.BD >= 10 && counts.RF >= 10 && counts.LP >= 10 &&
+           (counts.QU + counts.CM + counts.NTA) <= 3;
+  }
+  function pop(delay){
+    if(!audioCtx){
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if(AC) audioCtx = new AC();
+    }
+    if(!audioCtx) return;
+    if(audioCtx.state === "suspended") audioCtx.resume();
+    var len = Math.floor(audioCtx.sampleRate * 0.25);
+    var buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    var d = buf.getChannelData(0);
+    for(var i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 4);
+    var src = audioCtx.createBufferSource();
+    var g = audioCtx.createGain();
+    g.gain.value = 0.12;
+    src.buffer = buf;
+    src.connect(g); g.connect(audioCtx.destination);
+    src.start(audioCtx.currentTime + delay);
+  }
+  function burst(x, angleDeg){
+    var colors = ["#e74c3c","#f1c40f","#2ecc71","#3498db","#9b59b6","#ff7eb6","#ff9f1c"];
+    for(var i = 0; i < 70; i++){
+      var a = (angleDeg + (Math.random()-0.5)*50) * Math.PI/180;
+      var sp = 9 + Math.random()*11;
+      pieces.push({
+        x:x, y:cv.height,
+        vx:Math.cos(a)*sp, vy:-Math.sin(a)*sp,
+        w:6+Math.random()*6, h:4+Math.random()*6,
+        r:Math.random()*6, vr:(Math.random()-0.5)*0.4,
+        c:colors[Math.floor(Math.random()*colors.length)]
+      });
+    }
+  }
+  function frame(){
+    cx.clearRect(0, 0, cv.width, cv.height);
+    pieces = pieces.filter(function(p){ return p.y < cv.height + 20; });
+    pieces.forEach(function(p){
+      p.vy += 0.35; p.vx *= 0.99; p.vy *= 0.99;
+      p.x += p.vx; p.y += p.vy; p.r += p.vr;
+      cx.save();
+      cx.translate(p.x, p.y); cx.rotate(p.r);
+      cx.fillStyle = p.c;
+      cx.fillRect(-p.w/2, -p.h/2, p.w, p.h);
+      cx.restore();
+    });
+    if(pieces.length){ anim = requestAnimationFrame(frame); }
+    else{ anim = null; cx.clearRect(0, 0, cv.width, cv.height); }
+  }
+  function hideMastery(){
+    masteryEl.classList.remove("show");
+    clearTimeout(masteryHide);
+  }
+  function celebrate(){
+    cv.width = window.innerWidth; cv.height = window.innerHeight;
+    burst(0, 60); burst(cv.width, 120);
+    pop(0); pop(0.05);
+    setTimeout(function(){
+      burst(cv.width*0.25, 75); burst(cv.width*0.75, 105); pop(0);
+    }, 450);
+    masteryEl.classList.add("show");
+    clearTimeout(masteryHide);
+    masteryHide = setTimeout(hideMastery, 7000);
+    if(!anim) anim = requestAnimationFrame(frame);
+  }
+  masteryEl.addEventListener("click", hideMastery);
+  function checkMastery(){
+    var met = timerDone && isMet(); // 5分経過後のみ有効
+    if(met && !prevMet) celebrate();
+    if(!met) hideMastery();
+    prevMet = met;
+  }
+
   loadSaved();
+  prevMet = false;
   render();
 })();
 </script>
