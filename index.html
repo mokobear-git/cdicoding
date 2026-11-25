@@ -55,6 +55,9 @@
 
   *{box-sizing:border-box;}
   html,body{ margin:0; padding:0; }
+  /* ダブルタップでの拡大・選択を防ぐ（ピンチ拡大は残す） */
+  html{ touch-action:manipulation; -webkit-text-size-adjust:100%; }
+  button{ touch-action:manipulation; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   body{
     background:var(--bg);
     color:var(--text);
